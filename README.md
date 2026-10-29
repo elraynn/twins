@@ -2,7 +2,7 @@
 
 A command-line tool that finds code copied between your projects and shows how much each copy has changed.
 
-I wrote this at work. We have around 70 CodeIgniter apps, one per client, and most of them started as a copy of an older one. Over the years the same modules (invoicing, journals, stock posting) ended up in dozens of projects, each edited a bit differently. When I fixed a bug in one of them, I had no good way to know which other projects had the same code.
+I wrote this at work. We have dozens of CodeIgniter apps, and most of them started as a copy of an older one. Over the years the same modules (invoicing, journals, stock posting) ended up in dozens of projects, each edited a bit differently. When I fixed a bug in one of them, I had no good way to know which other projects had the same code.
 
 Git doesn't help with this, because each project is a separate repo (some aren't in git at all). So twins compares the code itself. You give it the folder that contains all your projects, and it reports:
 
