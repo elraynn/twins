@@ -1,0 +1,6 @@
+/vendor/
+composer.lock
+*.json.out
+/reports/
+/report*.html
+*.cache

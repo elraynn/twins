@@ -1,0 +1,40 @@
+{
+    "name": "elrayn/twins",
+    "description": "Find files that were copy-pasted across many projects and have drifted apart since",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "copy-paste",
+        "duplicate code",
+        "code clone",
+        "clone detection",
+        "winnowing",
+        "codeigniter",
+        "cli"
+    ],
+    "authors": [
+        {
+            "name": "Muhammad Rayhan"
+        }
+    ],
+    "require": {
+        "php": ">=7.4",
+        "ext-tokenizer": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "Elrayn\\Twins\\": "src/"
+        }
+    },
+    "bin": [
+        "bin/twins"
+    ],
+    "require-dev": {
+        "phpunit/phpunit": "^9.6"
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Elrayn\\Twins\\Tests\\": "tests/"
+        }
+    }
+}

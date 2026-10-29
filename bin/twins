@@ -1,0 +1,227 @@
+#!/usr/bin/env php
+<?php
+
+// Prototype CLI: twins scan <dir> [--top=N]
+
+foreach ([__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../autoload.php'] as $autoload) {
+    if (is_file($autoload)) {
+        require $autoload;
+        break;
+    }
+}
+
+use Elrayn\Twins\Detector;
+use Elrayn\Twins\Family;
+
+ini_set('memory_limit', '-1');
+
+$args = array_slice($argv, 1);
+$options = [];
+foreach ($args as $i => $arg) {
+    if (preg_match('/^--(\w+)=(.*)$/', $arg, $m)) {
+        $options[$m[1]] = $m[2];
+        unset($args[$i]);
+    }
+}
+$args = array_values($args);
+
+$command = $args[0] ?? null;
+if (!in_array($command, ['scan', 'find'], true) || !isset($args[1]) || !is_dir($args[1]) || ($command === 'find' && !isset($args[2]))) {
+    fwrite(STDERR, "Usage: twins scan <dir> [--top=25] [--html=report.html]\n");
+    fwrite(STDERR, "       twins find <dir> <snippet file, or - for stdin> [--min=50]\n");
+    exit(1);
+}
+
+// Read the snippet up front, so a typo fails before a long scan.
+if ($command === 'find') {
+    $snippetCode = $args[2] === '-' ? stream_get_contents(STDIN) : @file_get_contents($args[2]);
+    if ($snippetCode === false) {
+        fwrite(STDERR, "Cannot read snippet {$args[2]}\n");
+        exit(1);
+    }
+    $language = strtolower(pathinfo($args[2], PATHINFO_EXTENSION)) === 'js' ? 'js' : 'php';
+    $snippet = Elrayn\Twins\Finder::fingerprint($snippetCode, $language);
+    if ($snippet === []) {
+        fwrite(STDERR, "Snippet too short to search for: give it a few lines of code.\n");
+        exit(1);
+    }
+}
+
+$top = (int) ($options['top'] ?? 25);
+$cache = $options['cache'] ?? null;
+$started = microtime(true);
+
+// --cache=file keeps the scan result, so grouping can be re-tuned without
+// reading every file again.
+$jobs = max(1, (int) ($options['jobs'] ?? 1));
+
+if ($cache !== null && is_file($cache)) {
+    $detector = unserialize(file_get_contents($cache));
+} elseif ($jobs > 1) {
+    // Reading files is the slow part on Windows (antivirus checks every
+    // open), so split the projects over several processes and merge.
+    $args[1] = realpath($args[1]);
+    $projects = array_values(array_filter(scandir($args[1]), function ($name) use ($args) {
+        return $name[0] !== '.' && is_dir($args[1] . '/' . $name);
+    }));
+    $workers = [];
+    for ($i = 0; $i < $jobs; $i++) {
+        $share = array_values(array_filter($projects, function ($_, $n) use ($i, $jobs) {
+            return $n % $jobs === $i;
+        }, ARRAY_FILTER_USE_BOTH));
+        $dump = tempnam(sys_get_temp_dir(), 'twins');
+        $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__FILE__) . ' scan ' . escapeshellarg($args[1])
+            . ' --projects=' . escapeshellarg(implode(',', $share)) . ' --dump=' . escapeshellarg($dump)
+            . (isset($options['only']) ? ' --only=' . escapeshellarg($options['only']) : '');
+        // bypass_shell: cmd.exe mangles commands with several quoted parts.
+        $workers[] = [proc_open($command, [], $pipes, null, null, ['bypass_shell' => true]), $dump];
+    }
+    $detector = new Detector();
+    foreach ($workers as [$process, $dump]) {
+        proc_close($process);
+        $detector->merge(unserialize(file_get_contents($dump)));
+        unlink($dump);
+    }
+    if ($cache !== null) {
+        file_put_contents($cache, serialize($detector));
+    }
+} else {
+    $detector = new Detector();
+    if (isset($options['only'])) {
+        $detector->only = explode(',', $options['only']);
+    }
+    if (isset($options['projects'])) {
+        $detector->projects = explode(',', $options['projects']);
+    }
+    $detector->scan($args[1], function (int $count, string $path) use ($started) {
+        fprintf(STDERR, "  %6d files, %5.1fs  %s\n", $count, microtime(true) - $started, $path);
+    });
+    // Worker mode: hand the result back to the parent and stop.
+    if (isset($options['dump'])) {
+        file_put_contents($options['dump'], serialize($detector));
+        exit(0);
+    }
+    if ($cache !== null) {
+        file_put_contents($cache, serialize($detector));
+    }
+}
+$scanned = microtime(true);
+
+if (isset($options['exclude'])) {
+    $detector->exclude = explode(',', $options['exclude']);
+}
+
+if ($command === 'find') {
+    $finder = new Elrayn\Twins\Finder($detector, realpath($args[1]));
+    $found = $finder->find($snippet, ((int) ($options['min'] ?? 50)) / 100);
+
+    printf("\nFound in %d files in %d projects:\n\n", count($found), count(array_unique(array_map(function ($hit) {
+        return $hit['file']['project'];
+    }, $found))));
+    foreach ($found as $hit) {
+        printf(
+            "  %4d%%  %-18s %s%s\n",
+            round($hit['coverage'] * 100),
+            substr($hit['file']['project'], 0, 18),
+            $hit['file']['path'],
+            $hit['from'] === null ? '' : ($hit['from'] === $hit['to'] ? ":{$hit['from']}" : ":{$hit['from']}-{$hit['to']}")
+        );
+    }
+    exit(0);
+}
+
+$families = $detector->families();
+$done = microtime(true);
+
+$drifted = array_values(array_filter($families, function (Family $f) {
+    return !$f->identical();
+}));
+$identical = array_values(array_filter($families, function (Family $f) {
+    return $f->identical();
+}));
+
+$byReach = function (Family $a, Family $b) {
+    return [count($b->lineages()), count($b->contents())] <=> [count($a->lineages()), count($a->contents())];
+};
+usort($drifted, $byReach);
+usort($identical, $byReach);
+
+printf(
+    "\n%d files, %d distinct, in %d projects. Scan %.1fs, grouping %.1fs.\n",
+    count($detector->files),
+    count($detector->fingerprints),
+    count(array_unique(array_column($detector->files, 'project'))),
+    $scanned - $started,
+    $done - $scanned
+);
+printf("%d families of drifted copies, %d families of identical copies (spanning 2+ lineages).\n", count($drifted), count($identical));
+
+$groups = [];
+foreach ($detector->lineages() as $project => $lineage) {
+    $groups[$lineage][] = $project;
+}
+$groups = array_filter($groups, function ($projects) {
+    return count($projects) > 1;
+});
+echo "\n=== Projects that are copies of each other (" . count($groups) . " lineages) ===\n";
+foreach ($groups as $projects) {
+    sort($projects);
+    echo '  ' . implode(', ', $projects) . "\n";
+}
+
+echo "\n=== Drifted copies (top $top) ===\n";
+foreach (array_slice($drifted, 0, $top) as $n => $family) {
+    $similarity = $family->similarityToMedoid();
+    $medoid = $family->medoid();
+
+    printf(
+        "\n#%d  %s  —  %d lineages, %d projects, %d files, %d variants\n",
+        $n + 1,
+        $family->name(),
+        count($family->lineages()),
+        count($family->projects()),
+        count($family->files()),
+        count($family->contents())
+    );
+
+    $rows = $family->files();
+    uasort($rows, function ($a, $b) use ($similarity) {
+        return ($similarity[$b['content']] ?? 0) <=> ($similarity[$a['content']] ?? 0);
+    });
+
+    $limit = (int) ($options['rows'] ?? 14);
+    $shown = 0;
+    foreach ($rows as $file) {
+        if (++$shown > $limit) {
+            printf("    ... and %d more\n", count($rows) - $limit);
+            break;
+        }
+        $sim = $similarity[$file['content']] ?? null;
+        printf(
+            "    %-18s %5d  %s  %s%s\n",
+            substr($file['project'], 0, 18),
+            $file['lines'],
+            $sim === null ? '  ?  ' : sprintf('%4d%%', round($sim * 100)),
+            $file['path'],
+            $file['content'] === $medoid ? '   <- center' : ''
+        );
+    }
+}
+
+if (isset($options['html'])) {
+    $report = new Elrayn\Twins\HtmlReport($detector, realpath($args[1]));
+    file_put_contents($options['html'], $report->render(array_slice($drifted, 0, $top), $identical, [
+        'files' => count($detector->files),
+        'projects' => count(array_unique(array_column($detector->files, 'project'))),
+        'drifted' => count($drifted),
+        'identical' => count($identical),
+    ]));
+    printf("\nReport written to %s (%.1fs).\n", $options['html'], microtime(true) - $done);
+    exit(0);
+}
+
+echo "\n=== Identical copies (top 10 by reach) ===\n";
+foreach (array_slice($identical, 0, 10) as $family) {
+    $files = $family->files();
+    printf("  %-40s %3d lineages  e.g. %s\n", $family->name(), count($family->lineages()), reset($files)['path']);
+}
