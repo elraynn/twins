@@ -1,18 +1,16 @@
 # twins
 
-Find the code you copy-pasted between projects, and see how far each copy has drifted.
+A command-line tool that finds code copied between your projects and shows how much each copy has changed.
 
-If you build software for many clients, you probably know how this goes. Client B wants roughly what client A has, so you copy A's project and adjust it. A year later there are forty projects. The invoice module exists in thirty of them, each copy a little different. Somebody fixes a rounding bug in one, and nobody knows which of the others still have it.
+I wrote this at work. We have around 70 CodeIgniter apps, one per client, and most of them started as a copy of an older one. Over the years the same modules (invoicing, journals, stock posting) ended up in dozens of projects, each edited a bit differently. When I fixed a bug in one of them, I had no good way to know which other projects had the same code.
 
-Git can't help here. Every project is its own repository, or no repository at all, and nothing records that `clinic/libraries/Billing.php` started out as `shop-a/controllers/Invoice.php`. twins works that out from the code itself.
+Git doesn't help with this, because each project is a separate repo (some aren't in git at all). So twins compares the code itself. You give it the folder that contains all your projects, and it reports:
 
-Point it at the folder that holds all your projects. It tells you:
+- projects that are basically copies of each other (`shop-a` and `shop-a-old`). These are grouped together so they don't fill the results with every shared file.
+- files that were copied between unrelated projects and have changed since, with a similarity score for each copy and a diff against the copy that's closest to all the others.
+- every place a piece of code appears, if you give it a snippet. This is the "I just found a bug, where else is it?" case.
 
-- **which projects are copies of each other.** `shop-a` and `shop-a-old` count as one lineage, so their shared files don't flood the results.
-- **which files were copied across lineages and have drifted since.** You get every copy, how similar each one still is, and a diff against the center copy: the one closest to all the others, usually the original.
-- **where a given piece of code lives.** Paste the lines with the bug and get every file that has them, with line numbers.
-
-It reads PHP and JavaScript, and was built on a few dozen CodeIgniter apps, but it doesn't depend on any framework.
+It handles PHP and JavaScript. It was built against CodeIgniter apps but doesn't need any framework.
 
 ## Install
 
@@ -20,15 +18,17 @@ It reads PHP and JavaScript, and was built on a few dozen CodeIgniter apps, but 
 composer global require elrayn/twins
 ```
 
-or per project with `composer require --dev elrayn/twins`, then run `vendor/bin/twins`. It needs PHP 7.4 or later and the `tokenizer` extension, which nearly every PHP install has.
+Or inside a project: `composer require --dev elrayn/twins`, then run `vendor/bin/twins`. Needs PHP 7.4+ with the tokenizer extension (enabled by default in most installs).
 
-## Scan
+## Scanning
 
-Every folder directly inside the one you scan is treated as one project:
+Each folder directly under the path you give it is treated as one project.
 
 ```
 twins scan ~/projects --html=report.html
 ```
+
+Running it on the sample projects in [tests/fixtures/agency](tests/fixtures/agency) prints:
 
 ```
 8 files, 6 distinct, in 4 projects. Scan 0.0s, grouping 0.0s.
@@ -46,30 +46,30 @@ twins scan ~/projects --html=report.html
     clinic                57    34%  application/libraries/Billing.php
 ```
 
-That's the sample in [tests/fixtures/agency](tests/fixtures/agency). `Billing.php` is found even though it was renamed, moved and partly rewritten.
+In the sample, clinic's `Billing.php` is a copy of `Invoice.php` that was renamed, moved to `libraries/` and partly rewritten. It still gets picked up.
 
-`report.html` is a single file you open in a browser. It has the same results with a filter box, and a diff of every variant against the center. The report contains your code, so treat it like your code: don't publish it if the projects aren't public.
+The HTML report shows the same thing in a browser, with a search box and a diff for every copy. Keep in mind it includes your source code, so don't upload it anywhere public unless the code is public.
 
 Options:
 
-| Option | |
+| Option | What it does |
 |---|---|
-| `--html=file` | Write the HTML report |
-| `--only=application,app` | Only read these folders inside each project. Skipping framework code saves a lot of time |
-| `--exclude=*/views/auth/*,*/legacy/*` | Leave matching paths out of the results |
-| `--cache=file` | Save the scan. The next run with the same cache skips reading and only regroups, which takes seconds |
-| `--jobs=4` | Read with several processes |
-| `--top=25`, `--rows=14` | How many families, and files per family, to print |
+| `--html=file` | Write an HTML report |
+| `--only=application,app` | Only read these folders in each project. Skipping the framework makes scans much faster |
+| `--exclude=*/views/auth/*,*/legacy/*` | Hide matching paths from the results |
+| `--cache=file` | Save the scan to a file. Later runs with the same file skip reading and take seconds |
+| `--jobs=4` | Read files with several processes |
+| `--top=25`, `--rows=14` | Number of families, and files per family, to print |
 
-Some things are skipped without being asked: `vendor`, `node_modules`, `system` and `third_party` folders, minified JS, files over 512 KB, hand-made backups (`controllers - Copy`, `invoice_100325.php`, `models_backup`), a handful of bundled libraries (TCPDF, dompdf, PHPExcel, PHPMailer and friends), and CodeIgniter's own config, error and language files.
+Skipped by default: `vendor`, `node_modules`, `system` and `third_party` folders, `.min.js` files, files over 512 KB, backup copies like `controllers - Copy`, `invoice_100325.php` or `models_backup`, common bundled libraries (TCPDF, dompdf, PHPExcel, PHPMailer, etc.), and CodeIgniter's config, error and language files.
 
-## Find
+## Searching for a snippet
+
+Put the lines you're looking for in a file (no `<?php` needed) and run:
 
 ```
 twins find ~/projects bug.php
 ```
-
-`bug.php` holds the lines you're looking for. It doesn't need an opening `<?php`. Pass `-` instead of a file name to paste the lines into the terminal.
 
 ```
 Found in 4 files in 4 projects:
@@ -80,24 +80,24 @@ Found in 4 files in 4 projects:
    100%  shop-b             application/controllers/Invoice.php:41-46
 ```
 
-The percentage is how much of your snippet the file contains. Matches below 50% are left out; change that with `--min=`. Use `--cache=` here too, or every search reads all the files again.
+The percentage is how much of the snippet was found in that file. Anything under 50% is hidden; use `--min=` to change it. Use `-` instead of a file name to paste the snippet into the terminal. Pass `--cache=` here too, otherwise every search reads all the files again.
 
-Give it at least a few lines. Under 20 tokens (a line or two) there's nothing to match on, and twins will say so.
+The snippet needs to be at least a couple of lines long (20 tokens). Shorter than that, there's not enough to match.
 
 ## How it works
 
-Each file is turned into a stream of tokens with comments and whitespace removed, so reformatting a file doesn't change anything. Every run of 20 tokens is hashed, and a sample of those hashes is kept as the file's fingerprints, using the winnowing scheme from [Schleimer, Wilkerson and Aiken (2003)](https://theory.stanford.edu/~aiken/publications/papers/sigmod03.pdf), the paper behind the MOSS plagiarism checker. Any stretch of 27 or more tokens two files have in common is guaranteed to produce a shared fingerprint, wherever it sits in either file.
+Comments and whitespace are stripped and each file becomes a list of tokens, so reformatting doesn't affect anything. twins hashes every sequence of 20 tokens and keeps a sample of those hashes as the file's fingerprints, using winnowing ([Schleimer, Wilkerson & Aiken, 2003](https://theory.stanford.edu/~aiken/publications/papers/sigmod03.pdf)), the same method the MOSS plagiarism checker uses. If two files share a run of 27 tokens or more, they're guaranteed to share at least one fingerprint, wherever that code is in each file.
 
-Two files go into the same family when at least half the fingerprints of the smaller one also appear in the other. Fingerprints found in too many files, like `$this->load->view(...)` boilerplate, are ignored, since they are common rather than copied.
+Two files are put in the same family when at least half of the smaller file's fingerprints are also in the other one. Fingerprints that appear in a lot of files are ignored, because that's usually framework boilerplate like `$this->load->view(...)` and not actual copying.
 
-Projects become one lineage when at least 30% of the smaller project's files are identical in both. The center of a family is the copy with the highest total similarity to all the other copies.
+Two projects are counted as copies of each other when at least 30% of the smaller one's files are identical in both. The "center" of a family is the copy that is most similar to all the others, which usually turns out to be the original.
 
-## Limits
+## Limitations
 
-- **Renaming breaks matches.** twins compares the code as written. A copy where `$this->` became `$this->CI->` on every line, or where all the variables were renamed, can drop below the threshold and go unnoticed. Partial renames are fine.
-- **Only PHP and JavaScript** for now. JavaScript comments are stripped with a simple pattern that also eats `//` inside strings. Both sides of a comparison get the same treatment, so it rarely matters.
-- **The first scan can be slow** on large folders, mostly from disk reads. On Windows, antivirus scanning of every opened file dominates: about 50,000 files took 25 minutes. Use `--only`, `--jobs` and `--cache`.
-- **It finds copies, not bugs.** Similarity says where to look; reading the diff is still up to you.
+- Renamed code is harder to match. If a copy changed `$this->` to `$this->CI->` on every line, or renamed most of its variables, it may fall below the threshold and not show up. A few renames are fine.
+- Only PHP and JavaScript so far. JS comments are removed with a simple regex that also strips `//` inside strings. It's the same on both sides of a comparison, so it rarely causes problems.
+- The first scan of a big folder takes a while, mainly because of disk reads. On Windows the antivirus checks every file that gets opened: my scan of about 50,000 files took 25 minutes. `--only`, `--jobs` and `--cache` help a lot.
+- twins tells you where copies are and how they differ. Whether a difference is a bug or an intentional change, you still have to decide yourself.
 
 ## License
 
